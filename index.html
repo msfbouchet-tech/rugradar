@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RugRadar — Solana Token Risk Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ======================= HEADER ======================= -->
+  <header class="topbar">
+    <div class="topbar__brand">
+      <span class="topbar__mark">◎</span>
+      <span class="topbar__name">RUG<span class="topbar__accent">RADAR</span></span>
+    </div>
+    <div class="topbar__tag">Automated investigation report — Solana tokens</div>
+  </header>
+
+  <main class="wrap">
+
+    <!-- ======================= INTRO / SEARCH ======================= -->
+    <section class="intake">
+      <p class="intake__eyebrow">Case file — opening investigation</p>
+      <h1 class="intake__title">Is this token hiding a rug pull?</h1>
+      <p class="intake__desc">
+        Paste the token's mint address. RugRadar opens an investigation file
+        across 6 risk signals and delivers a stamped verdict.
+      </p>
+
+      <form id="scan-form" class="intake__form" autocomplete="off">
+        <label for="token-address" class="sr-only">Token address</label>
+        <input
+          type="text"
+          id="token-address"
+          class="intake__input"
+          placeholder="e.g. 7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"
+          spellcheck="false"
+        >
+        <button type="submit" class="intake__submit" id="scan-btn">
+          Open case file
+        </button>
+      </form>
+      <p class="intake__error" id="intake-error" hidden></p>
+    </section>
+
+    <!-- ======================= STATE: SCANNING ======================= -->
+    <section class="scanning" id="scanning-state" hidden>
+      <div class="scanning__log" id="scanning-log"></div>
+    </section>
+
+    <!-- ======================= STATE: REPORT ======================= -->
+    <section class="report" id="report-state" hidden>
+
+      <div class="report__head">
+        <div class="report__meta">
+          <p class="report__label">Case file No.<span id="report-caseid">—</span></p>
+          <p class="report__address" id="report-address">—</p>
+        </div>
+
+        <div class="stamp" id="verdict-stamp">
+          <div class="stamp__ring">
+            <span class="stamp__text" id="stamp-text">—</span>
+            <span class="stamp__sub" id="stamp-score">0/100</span>
+          </div>
+        </div>
+      </div>
+
+      <p class="report__disclaimer">
+        ⚠ This report is a risk indicator based on on-chain signals. It is not financial advice,
+        nor a guarantee. Always do your own research.
+      </p>
+
+      <div class="exhibits" id="exhibits-list"><!-- injected via JS --></div>
+
+      <button class="report__reset" id="reset-btn">← New case file</button>
+    </section>
+
+  </main>
+
+  <footer class="footer">
+    <p>Sources (v1): simulated data. Next step: Helius API + Solana RPC.</p>
+  </footer>
+
+  <script src="script.js"></script>
+</body>
+</html>

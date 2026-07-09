@@ -47,9 +47,9 @@ function shortAddr(addr) {
    2) CHECKERS — un par signal de risque
    --------------------------------------------------------------------------
    Statut par signal :
-   ✅ checkMintAuthority   → BRANCHÉ EN VRAI (RPC public Solana)
-   🔶 les 5 autres         → encore SIMULÉS, à brancher un par un ensuite
-   (Helius pour les holders/historique créateur, pump.fun pour la liquidité)
+   ✅ checkMintAuthority        → BRANCHÉ EN VRAI (Helius via fonction serveur)
+   ✅ checkHolderConcentration  → BRANCHÉ EN VRAI (Helius via fonction serveur)
+   🔶 les 4 autres              → encore SIMULÉS, à brancher un par un ensuite
 
    Toutes les fonctions renvoient la même "forme" de résultat, que ce soit
    du vrai ou du simulé — c'est ce qui permet de les remplacer une par une
@@ -58,18 +58,43 @@ function shortAddr(addr) {
    -------------------------------------------------------------------------- */
 
 // Signal 1 — Concentration des holders
-// TODO (réel) : Helius "getTokenAccounts" / "getTokenLargestAccounts" du RPC,
-// puis calculer la part du supply détenue par les 1-2 plus gros wallets.
-function checkHolderConcentration(rng) {
-  const topHolderPct = Math.round(rng() * 70); // 0-70%
-  let status = 'ok';
-  if (topHolderPct > 40) status = 'danger';
-  else if (topHolderPct > 20) status = 'warning';
-  return {
-    status,
-    detail: `The largest wallet holds ${topHolderPct}% of total supply.`,
-    raw: `top1_holder_pct=${topHolderPct}`,
-  };
+// ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius.
+async function checkHolderConcentration(rng, address) {
+  const FUNCTION_URL = `/.netlify/functions/holder-concentration?address=${encodeURIComponent(address)}`;
+
+  try {
+    const response = await fetch(FUNCTION_URL);
+    if (!response.ok) {
+      throw new Error(`server function responded with status ${response.status}`);
+    }
+    const { largest, supply } = await response.json();
+
+    const largestAccounts = largest?.result?.value;
+    const totalSupply = supply?.result?.value?.uiAmount;
+
+    if (!largestAccounts || largestAccounts.length === 0 || !totalSupply) {
+      throw new Error('unexpected data shape from RPC');
+    }
+
+    const topAmount = largestAccounts[0].uiAmount ?? 0;
+    const topHolderPct = Math.round((topAmount / totalSupply) * 100);
+
+    let status = 'ok';
+    if (topHolderPct > 40) status = 'danger';
+    else if (topHolderPct > 20) status = 'warning';
+
+    return {
+      status,
+      detail: `The largest token account holds ${topHolderPct}% of total supply. (Note: this may be a liquidity pool, not a single holder.)`,
+      raw: `top1_holder_pct=${topHolderPct}`,
+    };
+  } catch (err) {
+    return {
+      status: 'warning',
+      detail: `Could not verify holder concentration live (${err.message}).`,
+      raw: `error=${err.message}`,
+    };
+  }
 }
 
 // Signal 2 — Âge du token
@@ -104,15 +129,8 @@ function checkLiquidityLock(rng) {
 }
 
 // Signal 4 — Autorité de mint
-// ✅ BRANCHÉ EN VRAI : appel direct au RPC public Solana (aucune clé API
-// nécessaire). On demande les infos du compte "mint" en format déjà décodé
-// ("jsonParsed") — le RPC nous renvoie directement les champs qui nous
-// intéressent, pas besoin de décoder des données binaires nous-mêmes.
+// ✅ BRANCHÉ EN VRAI : appel via notre fonction serveur (clé Helius cachée).
 async function checkMintAuthority(rng, address) {
-  // ✅ On n'appelle plus Helius directement (la clé API resterait visible
-  // dans le code du navigateur). On appelle notre propre fonction serveur
-  // ("/.netlify/functions/mint-authority"), qui elle connaît la clé et fait
-  // l'appel à notre place. Voir netlify/functions/mint-authority.js
   const FUNCTION_URL = `/.netlify/functions/mint-authority?address=${encodeURIComponent(address)}`;
 
   try {
@@ -154,9 +172,6 @@ async function checkMintAuthority(rng, address) {
       raw: `mint_authority=${mintAuthority ?? 'null'} | freeze_authority=${freezeAuthority ?? 'null'}`,
     };
   } catch (err) {
-    // Le RPC public a des limites de débit strictes, et peut parfois
-    // refuser une requête ou timeout. On ne casse jamais tout le rapport
-    // pour ça : on affiche l'erreur comme signal "à vérifier manuellement".
     return {
       status: 'warning',
       detail: `Could not verify mint authority live (${err.message}).`,

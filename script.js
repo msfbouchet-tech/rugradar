@@ -46,18 +46,21 @@ function shortAddr(addr) {
 /* --------------------------------------------------------------------------
    2) CHECKERS — un par signal de risque
    --------------------------------------------------------------------------
-   Statut par signal :
-   ✅ checkMintAuthority        → BRANCHÉ EN VRAI (Helius via fonction serveur)
-   ✅ checkHolderConcentration  → BRANCHÉ EN VRAI (Helius via fonction serveur)
-   🔶 les 4 autres              → encore SIMULÉS, à brancher un par un ensuite
+   Statut par signal — TOUT est maintenant branché en réel :
+   ✅ checkHolderConcentration  → Helius (via fonction serveur)
+   ✅ checkTokenAge             → Helius (via fonction serveur)
+   ✅ checkLiquidityLock        → pump.fun (via fonction serveur)
+   ✅ checkMintAuthority        → Helius (via fonction serveur)
+   ✅ checkVolumeRatio          → DexScreener (appel direct, pas de clé)
+   ✅ checkCreatorHistory       → pump.fun (via fonction serveur)
 
-   Toutes les fonctions renvoient la même "forme" de résultat, que ce soit
-   du vrai ou du simulé — c'est ce qui permet de les remplacer une par une
-   sans toucher au reste du site :
+   Toutes les fonctions renvoient la même "forme" de résultat :
    { status: 'ok' | 'warning' | 'danger', detail: string, raw: string }
    -------------------------------------------------------------------------- */
 
 // Signal 1 — Concentration des holders
+// TODO (réel) : Helius "getTokenAccounts" / "getTokenLargestAccounts" du RPC,
+// puis calculer la part du supply détenue par les 1-2 plus gros wallets.
 // ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius.
 async function checkHolderConcentration(rng, address) {
   const FUNCTION_URL = `/.netlify/functions/holder-concentration?address=${encodeURIComponent(address)}`;
@@ -98,39 +101,99 @@ async function checkHolderConcentration(rng, address) {
 }
 
 // Signal 2 — Âge du token
-// TODO (réel) : timestamp de la transaction de création du mint (RPC
-// getSignaturesForAddress, la plus ancienne signature).
-function checkTokenAge(rng) {
-  const ageHours = Math.round(rng() * 400); // 0-400h
-  let status = 'ok';
-  if (ageHours < 6) status = 'danger';
-  else if (ageHours < 48) status = 'warning';
-  const label = ageHours < 24 ? `${ageHours}h` : `${Math.round(ageHours / 24)} days`;
-  return {
-    status,
-    detail: `This token has existed for about ${label}.`,
-    raw: `age_hours=${ageHours}`,
-  };
+// ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius.
+async function checkTokenAge(rng, address) {
+  const FUNCTION_URL = `/.netlify/functions/token-age?address=${encodeURIComponent(address)}`;
+
+  try {
+    const response = await fetch(FUNCTION_URL);
+    if (!response.ok) {
+      throw new Error(`server function responded with status ${response.status}`);
+    }
+    const json = await response.json();
+    const signatures = json?.result;
+
+    if (!signatures || signatures.length === 0) {
+      throw new Error('no transaction history found for this address');
+    }
+
+    // La dernière de la liste = la plus ancienne transaction reçue.
+    const oldest = signatures[signatures.length - 1];
+    const createdAtMs = oldest.blockTime * 1000;
+    const ageHours = Math.round((Date.now() - createdAtMs) / (1000 * 60 * 60));
+
+    let status = 'ok';
+    if (ageHours < 6) status = 'danger';
+    else if (ageHours < 48) status = 'warning';
+
+    const label = ageHours < 24 ? `${ageHours}h` : `${Math.round(ageHours / 24)} days`;
+
+    return {
+      status,
+      detail: `This token has existed for about ${label}.`,
+      raw: `age_hours=${ageHours}`,
+    };
+  } catch (err) {
+    return {
+      status: 'warning',
+      detail: `Could not verify token age live (${err.message}).`,
+      raw: `error=${err.message}`,
+    };
+  }
 }
 
 // Signal 3 — Liquidité verrouillée ou non
-// TODO (réel) : vérifier si le LP token est burn/verrouillé (souvent visible
-// via l'API pump.fun une fois le token "gradué", ou via le programme de
-// verrouillage utilisé, ex. Streamflow).
-function checkLiquidityLock(rng) {
-  const locked = rng() > 0.45;
-  return {
-    status: locked ? 'ok' : 'danger',
-    detail: locked
-      ? `Liquidity is locked or burned (LP cannot be pulled by the creator).`
-      : `No liquidity lock detected. The creator can pull liquidity at any time.`,
-    raw: `lp_locked=${locked}`,
-  };
+// ✅ BRANCHÉ EN VRAI : utilise le statut "gradué" de pump.fun. Une fois
+// gradué vers Raydium, pump.fun brûle automatiquement les tokens LP —
+// avant graduation, la liquidité vit sur la bonding curve, un programme
+// que le créateur ne contrôle pas non plus. Dans les deux cas, le créateur
+// ne peut pas retirer la liquidité lui-même.
+async function checkLiquidityLock(rng, address) {
+  const FUNCTION_URL = `/.netlify/functions/pumpfun-coin?address=${encodeURIComponent(address)}`;
+
+  try {
+    const response = await fetch(FUNCTION_URL);
+    if (!response.ok) {
+      throw new Error(`server function responded with status ${response.status}`);
+    }
+    const json = await response.json();
+
+    if (!json.found) {
+      return {
+        status: 'warning',
+        detail: `This token was not found on pump.fun — cannot verify liquidity lock status automatically.`,
+        raw: `pumpfun_found=false`,
+      };
+    }
+
+    const graduated = Boolean(json.coin.complete);
+
+    return {
+      status: 'ok',
+      detail: graduated
+        ? `Token has graduated to Raydium; pump.fun automatically burns LP tokens on graduation.`
+        : `Token is still on pump.fun's bonding curve; liquidity is program-controlled and cannot be withdrawn by the creator.`,
+      raw: `pumpfun_complete=${graduated}`,
+    };
+  } catch (err) {
+    return {
+      status: 'warning',
+      detail: `Could not verify liquidity status live (${err.message}).`,
+      raw: `error=${err.message}`,
+    };
+  }
 }
 
 // Signal 4 — Autorité de mint
-// ✅ BRANCHÉ EN VRAI : appel via notre fonction serveur (clé Helius cachée).
+// ✅ BRANCHÉ EN VRAI : appel direct au RPC public Solana (aucune clé API
+// nécessaire). On demande les infos du compte "mint" en format déjà décodé
+// ("jsonParsed") — le RPC nous renvoie directement les champs qui nous
+// intéressent, pas besoin de décoder des données binaires nous-mêmes.
 async function checkMintAuthority(rng, address) {
+  // ✅ On n'appelle plus Helius directement (la clé API resterait visible
+  // dans le code du navigateur). On appelle notre propre fonction serveur
+  // ("/.netlify/functions/mint-authority"), qui elle connaît la clé et fait
+  // l'appel à notre place. Voir netlify/functions/mint-authority.js
   const FUNCTION_URL = `/.netlify/functions/mint-authority?address=${encodeURIComponent(address)}`;
 
   try {
@@ -172,6 +235,9 @@ async function checkMintAuthority(rng, address) {
       raw: `mint_authority=${mintAuthority ?? 'null'} | freeze_authority=${freezeAuthority ?? 'null'}`,
     };
   } catch (err) {
+    // Le RPC public a des limites de débit strictes, et peut parfois
+    // refuser une requête ou timeout. On ne casse jamais tout le rapport
+    // pour ça : on affiche l'erreur comme signal "à vérifier manuellement".
     return {
       status: 'warning',
       detail: `Could not verify mint authority live (${err.message}).`,
@@ -181,36 +247,103 @@ async function checkMintAuthority(rng, address) {
 }
 
 // Signal 5 — Ratio volume / market cap
-// TODO (réel) : agréger le volume 24h (Helius / DEX aggregator) et le
-// diviser par le market cap courant.
-function checkVolumeRatio(rng) {
-  const ratio = +(rng() * 3).toFixed(2); // 0 - 3x
-  let status = 'ok';
-  if (ratio > 1.8) status = 'danger';
-  else if (ratio > 0.9) status = 'warning';
-  return {
-    status,
-    detail: `24h volume / market cap ratio: ${ratio}x${ratio > 1.8 ? ' — likely wash trading.' : '.'}`,
-    raw: `vol_mcap_ratio=${ratio}`,
-  };
+// ✅ BRANCHÉ EN VRAI : API publique DexScreener, gratuite et sans clé — pas
+// besoin de passer par une fonction serveur ici, il n'y a aucun secret à
+// protéger et DexScreener autorise les appels directs depuis un navigateur.
+async function checkVolumeRatio(rng, address) {
+  try {
+    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
+    if (!response.ok) {
+      throw new Error(`DexScreener responded with status ${response.status}`);
+    }
+    const json = await response.json();
+    const pairs = json?.pairs;
+
+    if (!pairs || pairs.length === 0) {
+      throw new Error('no trading pair found on DexScreener');
+    }
+
+    // Plusieurs pools peuvent exister pour un même token ; on prend celui
+    // avec le plus de liquidité, généralement le plus représentatif.
+    const pair = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+
+    const volume24h = pair.volume?.h24 ?? 0;
+    const marketCap = pair.marketCap ?? pair.fdv ?? 0;
+
+    if (!marketCap) {
+      throw new Error('market cap unavailable for this pair');
+    }
+
+    const ratio = +(volume24h / marketCap).toFixed(2);
+
+    let status = 'ok';
+    if (ratio > 1.8) status = 'danger';
+    else if (ratio > 0.9) status = 'warning';
+
+    return {
+      status,
+      detail: `24h volume / market cap ratio: ${ratio}x${ratio > 1.8 ? ' — likely wash trading.' : '.'}`,
+      raw: `vol_mcap_ratio=${ratio}`,
+    };
+  } catch (err) {
+    return {
+      status: 'warning',
+      detail: `Could not verify volume/market cap ratio live (${err.message}).`,
+      raw: `error=${err.message}`,
+    };
+  }
 }
 
 // Signal 6 — Historique du wallet créateur
-// TODO (réel) : lister les tokens précédemment créés par ce wallet
-// (via Helius "parsed transaction history" sur ce wallet) et croiser
-// avec un signal de rug (liquidité retirée peu après création, etc.)
-function checkCreatorHistory(rng) {
-  const priorRugs = Math.floor(rng() * 4); // 0-3
-  let status = 'ok';
-  if (priorRugs >= 2) status = 'danger';
-  else if (priorRugs === 1) status = 'warning';
-  return {
-    status,
-    detail: priorRugs === 0
-      ? `No known rug pull history for this creator wallet.`
-      : `This wallet has created ${priorRugs} other token(s) linked to a possible rug pull.`,
-    raw: `creator_prior_rugs=${priorRugs}`,
-  };
+// ✅ BRANCHÉ EN VRAI : liste les autres tokens créés par ce wallet via
+// pump.fun. Important : on ne peut pas affirmer avec certitude qu'un token
+// passé a "rug pull" à partir de données publiques simples (ça demanderait
+// une analyse de prix historique poussée) — on reste donc honnête et on
+// affiche un COMPTE de tokens déjà lancés, pas une accusation. Un nombre
+// élevé reste un vrai signal d'alerte (pattern de "serial launcher").
+async function checkCreatorHistory(rng, address) {
+  try {
+    const coinResp = await fetch(`/.netlify/functions/pumpfun-coin?address=${encodeURIComponent(address)}`);
+    if (!coinResp.ok) {
+      throw new Error(`server function responded with status ${coinResp.status}`);
+    }
+    const coinJson = await coinResp.json();
+
+    if (!coinJson.found || !coinJson.coin?.creator) {
+      return {
+        status: 'warning',
+        detail: `Could not determine the creator wallet for this token (not found on pump.fun).`,
+        raw: `creator_found=false`,
+      };
+    }
+
+    const creator = coinJson.coin.creator;
+    const listResp = await fetch(`/.netlify/functions/pumpfun-creator?creator=${encodeURIComponent(creator)}`);
+    if (!listResp.ok) {
+      throw new Error(`server function responded with status ${listResp.status}`);
+    }
+    const listJson = await listResp.json();
+    const coins = Array.isArray(listJson.coins) ? listJson.coins : [];
+    const otherTokensCount = Math.max(0, coins.length - 1); // exclut le token scanné lui-même
+
+    let status = 'ok';
+    if (otherTokensCount >= 5) status = 'danger';
+    else if (otherTokensCount >= 1) status = 'warning';
+
+    return {
+      status,
+      detail: otherTokensCount === 0
+        ? `This is the only token launched by this creator wallet, based on pump.fun's public data.`
+        : `This creator wallet has launched ${otherTokensCount} other token(s) on pump.fun. A high count can signal a serial-launch pattern — worth checking individually.`,
+      raw: `creator_token_count=${otherTokensCount}`,
+    };
+  } catch (err) {
+    return {
+      status: 'warning',
+      detail: `Could not verify creator history live (${err.message}).`,
+      raw: `error=${err.message}`,
+    };
+  }
 }
 
 

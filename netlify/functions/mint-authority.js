@@ -8,6 +8,8 @@
 // ============================================================================
 
 exports.handler = async function (event) {
+  console.log('mint-authority function called, address =', event.queryStringParameters?.address);
+
   const address = event.queryStringParameters?.address;
 
   if (!address) {
@@ -18,6 +20,7 @@ exports.handler = async function (event) {
   }
 
   const HELIUS_API_KEY = process.env.HELIUS_API_KEY;
+  console.log('HELIUS_API_KEY present?', Boolean(HELIUS_API_KEY));
 
   if (!HELIUS_API_KEY) {
     return {
@@ -29,6 +32,7 @@ exports.handler = async function (event) {
   const RPC_URL = `https://mainnet.helius-rpc.com/?api-key=${HELIUS_API_KEY}`;
 
   try {
+    console.log('calling Helius...');
     const response = await fetch(RPC_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -40,6 +44,7 @@ exports.handler = async function (event) {
       }),
     });
 
+    console.log('Helius responded with status', response.status);
     const data = await response.json();
 
     return {
@@ -48,6 +53,7 @@ exports.handler = async function (event) {
       body: JSON.stringify(data),
     };
   } catch (err) {
+    console.error('mint-authority function crashed:', err);
     return {
       statusCode: 500,
       body: JSON.stringify({ error: err.message }),

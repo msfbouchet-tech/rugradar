@@ -13,21 +13,15 @@
    1) UTILITAIRES
    -------------------------------------------------------------------------- */
 
-// Transforme une adresse (string) en nombre "seed". Ça sert à obtenir
-// TOUJOURS le même résultat simulé pour la même adresse (comme un vrai
-// scan serait cohérent d'un appel à l'autre).
 function hashAddress(address) {
   let hash = 0;
   for (let i = 0; i < address.length; i++) {
     hash = (hash << 5) - hash + address.charCodeAt(i);
-    hash |= 0; // force un entier 32 bits
+    hash |= 0;
   }
   return Math.abs(hash);
 }
 
-// Petit générateur pseudo-aléatoire "seedé" (mulberry32).
-// Contrairement à Math.random(), il produit toujours la même suite
-// de nombres si on lui donne la même seed.
 function createRng(seed) {
   return function () {
     seed |= 0;
@@ -48,20 +42,16 @@ function shortAddr(addr) {
    --------------------------------------------------------------------------
    Statut par signal — TOUT est maintenant branché en réel :
    ✅ checkHolderConcentration  → Helius (via fonction serveur)
-   ✅ checkTokenAge             → Helius (via fonction serveur)
-   ✅ checkLiquidityLock        → pump.fun (via fonction serveur)
+   ✅ checkTokenAge             → Helius (via fonction serveur, paginé)
+   ✅ checkLiquidityLock        → DexScreener (appel direct, pas de clé)
    ✅ checkMintAuthority        → Helius (via fonction serveur)
    ✅ checkVolumeRatio          → DexScreener (appel direct, pas de clé)
-   ✅ checkCreatorHistory       → pump.fun (via fonction serveur)
+   ✅ checkCreatorHistory       → Helius (via fonction serveur)
 
    Toutes les fonctions renvoient la même "forme" de résultat :
    { status: 'ok' | 'warning' | 'danger', detail: string, raw: string }
    -------------------------------------------------------------------------- */
 
-// Signal 1 — Concentration des holders
-// TODO (réel) : Helius "getTokenAccounts" / "getTokenLargestAccounts" du RPC,
-// puis calculer la part du supply détenue par les 1-2 plus gros wallets.
-// ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius.
 async function checkHolderConcentration(rng, address) {
   const FUNCTION_URL = `/.netlify/functions/holder-concentration?address=${encodeURIComponent(address)}`;
 
@@ -100,8 +90,6 @@ async function checkHolderConcentration(rng, address) {
   }
 }
 
-// Signal 2 — Âge du token
-// ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius.
 async function checkTokenAge(rng, address) {
   const FUNCTION_URL = `/.netlify/functions/token-age?address=${encodeURIComponent(address)}`;
 
@@ -110,15 +98,12 @@ async function checkTokenAge(rng, address) {
     if (!response.ok) {
       throw new Error(`server function responded with status ${response.status}`);
     }
-    const json = await response.json();
-    const signatures = json?.result;
+    const { oldest, reachedGenesis } = await response.json();
 
-    if (!signatures || signatures.length === 0) {
+    if (!oldest || !oldest.blockTime) {
       throw new Error('no transaction history found for this address');
     }
 
-    // La dernière de la liste = la plus ancienne transaction reçue.
-    const oldest = signatures[signatures.length - 1];
     const createdAtMs = oldest.blockTime * 1000;
     const ageHours = Math.round((Date.now() - createdAtMs) / (1000 * 60 * 60));
 
@@ -127,11 +112,12 @@ async function checkTokenAge(rng, address) {
     else if (ageHours < 48) status = 'warning';
 
     const label = ageHours < 24 ? `${ageHours}h` : `${Math.round(ageHours / 24)} days`;
+    const prefix = reachedGenesis ? '' : 'at least ';
 
     return {
       status,
-      detail: `This token has existed for about ${label}.`,
-      raw: `age_hours=${ageHours}`,
+      detail: `This token has existed for ${prefix}about ${label}${reachedGenesis ? '' : ' (very high transaction volume — could be older)'}.`,
+      raw: `age_hours=${ageHours}${reachedGenesis ? '' : ' (lower bound)'}`,
     };
   } catch (err) {
     return {
@@ -142,58 +128,41 @@ async function checkTokenAge(rng, address) {
   }
 }
 
-// Signal 3 — Liquidité verrouillée ou non
-// ✅ BRANCHÉ EN VRAI : utilise le statut "gradué" de pump.fun. Une fois
-// gradué vers Raydium, pump.fun brûle automatiquement les tokens LP —
-// avant graduation, la liquidité vit sur la bonding curve, un programme
-// que le créateur ne contrôle pas non plus. Dans les deux cas, le créateur
-// ne peut pas retirer la liquidité lui-même.
 async function checkLiquidityLock(rng, address) {
-  const FUNCTION_URL = `/.netlify/functions/pumpfun-coin?address=${encodeURIComponent(address)}`;
-
   try {
-    const response = await fetch(FUNCTION_URL);
+    const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
     if (!response.ok) {
-      throw new Error(`server function responded with status ${response.status}`);
+      throw new Error(`DexScreener responded with status ${response.status}`);
     }
     const json = await response.json();
+    const pairs = json?.pairs;
 
-    if (!json.found) {
-      return {
-        status: 'warning',
-        detail: `This token was not found on pump.fun — cannot verify liquidity lock status automatically.`,
-        raw: `pumpfun_found=false`,
-      };
+    if (!pairs || pairs.length === 0) {
+      throw new Error('no trading pair found on DexScreener');
     }
 
-    const graduated = Boolean(json.coin.complete);
+    const pair = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
+    const liquidityUsd = Math.round(pair.liquidity?.usd ?? 0);
+
+    let status = 'ok';
+    if (liquidityUsd < 3000) status = 'danger';
+    else if (liquidityUsd < 15000) status = 'warning';
 
     return {
-      status: 'ok',
-      detail: graduated
-        ? `Token has graduated to Raydium; pump.fun automatically burns LP tokens on graduation.`
-        : `Token is still on pump.fun's bonding curve; liquidity is program-controlled and cannot be withdrawn by the creator.`,
-      raw: `pumpfun_complete=${graduated}`,
+      status,
+      detail: `Liquidity depth: $${liquidityUsd.toLocaleString()}. (Note: this measures depth, not whether LP tokens are technically locked/burned — that requires the launchpad's own data, unavailable here.)`,
+      raw: `liquidity_usd=${liquidityUsd}`,
     };
   } catch (err) {
     return {
       status: 'warning',
-      detail: `Could not verify liquidity status live (${err.message}).`,
+      detail: `Could not verify liquidity live (${err.message}).`,
       raw: `error=${err.message}`,
     };
   }
 }
 
-// Signal 4 — Autorité de mint
-// ✅ BRANCHÉ EN VRAI : appel direct au RPC public Solana (aucune clé API
-// nécessaire). On demande les infos du compte "mint" en format déjà décodé
-// ("jsonParsed") — le RPC nous renvoie directement les champs qui nous
-// intéressent, pas besoin de décoder des données binaires nous-mêmes.
 async function checkMintAuthority(rng, address) {
-  // ✅ On n'appelle plus Helius directement (la clé API resterait visible
-  // dans le code du navigateur). On appelle notre propre fonction serveur
-  // ("/.netlify/functions/mint-authority"), qui elle connaît la clé et fait
-  // l'appel à notre place. Voir netlify/functions/mint-authority.js
   const FUNCTION_URL = `/.netlify/functions/mint-authority?address=${encodeURIComponent(address)}`;
 
   try {
@@ -204,17 +173,14 @@ async function checkMintAuthority(rng, address) {
     }
 
     const json = await response.json();
-
-    // Chemin dans la réponse JSON-RPC : result.value.data.parsed.info
     const info = json?.result?.value?.data?.parsed?.info;
 
     if (!info) {
-      // Soit l'adresse n'est pas un mint SPL valide, soit elle n'existe pas.
       throw new Error("invalid address or not an SPL token");
     }
 
-    const mintAuthority = info.mintAuthority;     // null = révoquée
-    const freezeAuthority = info.freezeAuthority; // null = révoquée
+    const mintAuthority = info.mintAuthority;
+    const freezeAuthority = info.freezeAuthority;
 
     const mintRevoked = mintAuthority === null || mintAuthority === undefined;
     const freezeRevoked = freezeAuthority === null || freezeAuthority === undefined;
@@ -235,9 +201,6 @@ async function checkMintAuthority(rng, address) {
       raw: `mint_authority=${mintAuthority ?? 'null'} | freeze_authority=${freezeAuthority ?? 'null'}`,
     };
   } catch (err) {
-    // Le RPC public a des limites de débit strictes, et peut parfois
-    // refuser une requête ou timeout. On ne casse jamais tout le rapport
-    // pour ça : on affiche l'erreur comme signal "à vérifier manuellement".
     return {
       status: 'warning',
       detail: `Could not verify mint authority live (${err.message}).`,
@@ -246,10 +209,6 @@ async function checkMintAuthority(rng, address) {
   }
 }
 
-// Signal 5 — Ratio volume / market cap
-// ✅ BRANCHÉ EN VRAI : API publique DexScreener, gratuite et sans clé — pas
-// besoin de passer par une fonction serveur ici, il n'y a aucun secret à
-// protéger et DexScreener autorise les appels directs depuis un navigateur.
 async function checkVolumeRatio(rng, address) {
   try {
     const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
@@ -263,8 +222,6 @@ async function checkVolumeRatio(rng, address) {
       throw new Error('no trading pair found on DexScreener');
     }
 
-    // Plusieurs pools peuvent exister pour un même token ; on prend celui
-    // avec le plus de liquidité, généralement le plus représentatif.
     const pair = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
 
     const volume24h = pair.volume?.h24 ?? 0;
@@ -294,37 +251,17 @@ async function checkVolumeRatio(rng, address) {
   }
 }
 
-// Signal 6 — Historique du wallet créateur
-// ✅ BRANCHÉ EN VRAI : liste les autres tokens créés par ce wallet via
-// pump.fun. Important : on ne peut pas affirmer avec certitude qu'un token
-// passé a "rug pull" à partir de données publiques simples (ça demanderait
-// une analyse de prix historique poussée) — on reste donc honnête et on
-// affiche un COMPTE de tokens déjà lancés, pas une accusation. Un nombre
-// élevé reste un vrai signal d'alerte (pattern de "serial launcher").
 async function checkCreatorHistory(rng, address) {
+  const FUNCTION_URL = `/.netlify/functions/creator-history?address=${encodeURIComponent(address)}`;
+
   try {
-    const coinResp = await fetch(`/.netlify/functions/pumpfun-coin?address=${encodeURIComponent(address)}`);
-    if (!coinResp.ok) {
-      throw new Error(`server function responded with status ${coinResp.status}`);
+    const response = await fetch(FUNCTION_URL);
+    if (!response.ok) {
+      throw new Error(`server function responded with status ${response.status}`);
     }
-    const coinJson = await coinResp.json();
+    const { creator, mintEventCount } = await response.json();
 
-    if (!coinJson.found || !coinJson.coin?.creator) {
-      return {
-        status: 'warning',
-        detail: `Could not determine the creator wallet for this token (not found on pump.fun).`,
-        raw: `creator_found=false`,
-      };
-    }
-
-    const creator = coinJson.coin.creator;
-    const listResp = await fetch(`/.netlify/functions/pumpfun-creator?creator=${encodeURIComponent(creator)}`);
-    if (!listResp.ok) {
-      throw new Error(`server function responded with status ${listResp.status}`);
-    }
-    const listJson = await listResp.json();
-    const coins = Array.isArray(listJson.coins) ? listJson.coins : [];
-    const otherTokensCount = Math.max(0, coins.length - 1); // exclut le token scanné lui-même
+    const otherTokensCount = Math.max(0, (mintEventCount ?? 1) - 1);
 
     let status = 'ok';
     if (otherTokensCount >= 5) status = 'danger';
@@ -333,9 +270,9 @@ async function checkCreatorHistory(rng, address) {
     return {
       status,
       detail: otherTokensCount === 0
-        ? `This is the only token launched by this creator wallet, based on pump.fun's public data.`
-        : `This creator wallet has launched ${otherTokensCount} other token(s) on pump.fun. A high count can signal a serial-launch pattern — worth checking individually.`,
-      raw: `creator_token_count=${otherTokensCount}`,
+        ? `No other token creations found for this creator wallet (${shortAddr(creator)}) in recent history.`
+        : `This creator wallet (${shortAddr(creator)}) has created ${otherTokensCount} other token(s) recently. A high count can signal a serial-launch pattern — worth checking individually.`,
+      raw: `creator=${creator} | other_tokens=${otherTokensCount}`,
     };
   } catch (err) {
     return {
@@ -360,10 +297,6 @@ const EXHIBITS_CONFIG = [
   { key: 'creator',   title: 'Creator history',           fn: checkCreatorHistory },
 ];
 
-// Certains checkers sont encore simulés (synchrones), d'autres font
-// maintenant un vrai appel réseau (asynchrones, ex. checkMintAuthority).
-// `Promise.all` + `await` sur chaque résultat fonctionne pour les deux cas :
-// attendre une valeur qui n'est pas une Promise ne pose aucun problème.
 async function analyzeToken(address) {
   const seed = hashAddress(address);
   const rng = createRng(seed);
@@ -381,8 +314,6 @@ async function analyzeToken(address) {
   return { address, seed, exhibits, score };
 }
 
-// Score global 0 (dangereux) → 100 (sûr).
-// Logique simple : on part de 100 et on retire des points par problème détecté.
 function computeScore(exhibits) {
   let score = 100;
   for (const ex of exhibits) {
@@ -423,7 +354,6 @@ const SCAN_LOG_MESSAGES = [
 ];
 
 function isPlausibleSolanaAddress(str) {
-  // Une adresse Solana est en base58, généralement 32-44 caractères.
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(str.trim());
 }
 
@@ -484,9 +414,8 @@ function renderReport(data) {
   document.getElementById('stamp-text').textContent = verdict.label;
   document.getElementById('stamp-score').textContent = `${data.score}/100`;
 
-  // Relance l'animation du tampon à chaque nouveau scan
   stampRing.style.animation = 'none';
-  void stampRing.offsetWidth; // force reflow
+  void stampRing.offsetWidth;
   stampRing.style.animation = '';
 
   const list = document.getElementById('exhibits-list');

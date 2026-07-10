@@ -13,15 +13,21 @@
    1) UTILITAIRES
    -------------------------------------------------------------------------- */
 
+// Transforme une adresse (string) en nombre "seed". Ça sert à obtenir
+// TOUJOURS le même résultat simulé pour la même adresse (comme un vrai
+// scan serait cohérent d'un appel à l'autre).
 function hashAddress(address) {
   let hash = 0;
   for (let i = 0; i < address.length; i++) {
     hash = (hash << 5) - hash + address.charCodeAt(i);
-    hash |= 0;
+    hash |= 0; // force un entier 32 bits
   }
   return Math.abs(hash);
 }
 
+// Petit générateur pseudo-aléatoire "seedé" (mulberry32).
+// Contrairement à Math.random(), il produit toujours la même suite
+// de nombres si on lui donne la même seed.
 function createRng(seed) {
   return function () {
     seed |= 0;
@@ -52,6 +58,8 @@ function shortAddr(addr) {
    { status: 'ok' | 'warning' | 'danger', detail: string, raw: string }
    -------------------------------------------------------------------------- */
 
+// Signal 1 — Concentration des holders
+// ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius.
 async function checkHolderConcentration(rng, address) {
   const FUNCTION_URL = `/.netlify/functions/holder-concentration?address=${encodeURIComponent(address)}`;
 
@@ -90,6 +98,9 @@ async function checkHolderConcentration(rng, address) {
   }
 }
 
+// Signal 2 — Âge du token
+// ✅ BRANCHÉ EN VRAI : appelle notre fonction serveur qui interroge Helius
+// avec pagination (voir token-age.js pour le détail).
 async function checkTokenAge(rng, address) {
   const FUNCTION_URL = `/.netlify/functions/token-age?address=${encodeURIComponent(address)}`;
 
@@ -128,6 +139,15 @@ async function checkTokenAge(rng, address) {
   }
 }
 
+// Signal 3 — Liquidité
+// ✅ BRANCHÉ EN VRAI (v2, via DexScreener) : pump.fun a fermé son API
+// publique derrière une authentification, on ne peut plus s'y fier ici.
+// On mesure à la place la PROFONDEUR de liquidité en dollars — une
+// liquidité très faible est en soi un signal de risque (forte volatilité,
+// facile à faire chuter). On ne peut pas confirmer un "verrouillage"
+// technique sans l'API du launchpad d'origine — c'est documenté ici en
+// toute transparence plutôt que d'inventer un statut qu'on ne peut pas
+// vérifier.
 async function checkLiquidityLock(rng, address) {
   try {
     const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
@@ -162,7 +182,16 @@ async function checkLiquidityLock(rng, address) {
   }
 }
 
+// Signal 4 — Autorité de mint
+// ✅ BRANCHÉ EN VRAI : appel direct au RPC public Solana (aucune clé API
+// nécessaire). On demande les infos du compte "mint" en format déjà décodé
+// ("jsonParsed") — le RPC nous renvoie directement les champs qui nous
+// intéressent, pas besoin de décoder des données binaires nous-mêmes.
 async function checkMintAuthority(rng, address) {
+  // ✅ On n'appelle plus Helius directement (la clé API resterait visible
+  // dans le code du navigateur). On appelle notre propre fonction serveur
+  // ("/.netlify/functions/mint-authority"), qui elle connaît la clé et fait
+  // l'appel à notre place. Voir netlify/functions/mint-authority.js
   const FUNCTION_URL = `/.netlify/functions/mint-authority?address=${encodeURIComponent(address)}`;
 
   try {
@@ -173,14 +202,17 @@ async function checkMintAuthority(rng, address) {
     }
 
     const json = await response.json();
+
+    // Chemin dans la réponse JSON-RPC : result.value.data.parsed.info
     const info = json?.result?.value?.data?.parsed?.info;
 
     if (!info) {
+      // Soit l'adresse n'est pas un mint SPL valide, soit elle n'existe pas.
       throw new Error("invalid address or not an SPL token");
     }
 
-    const mintAuthority = info.mintAuthority;
-    const freezeAuthority = info.freezeAuthority;
+    const mintAuthority = info.mintAuthority;     // null = révoquée
+    const freezeAuthority = info.freezeAuthority; // null = révoquée
 
     const mintRevoked = mintAuthority === null || mintAuthority === undefined;
     const freezeRevoked = freezeAuthority === null || freezeAuthority === undefined;
@@ -201,6 +233,9 @@ async function checkMintAuthority(rng, address) {
       raw: `mint_authority=${mintAuthority ?? 'null'} | freeze_authority=${freezeAuthority ?? 'null'}`,
     };
   } catch (err) {
+    // Le RPC public a des limites de débit strictes, et peut parfois
+    // refuser une requête ou timeout. On ne casse jamais tout le rapport
+    // pour ça : on affiche l'erreur comme signal "à vérifier manuellement".
     return {
       status: 'warning',
       detail: `Could not verify mint authority live (${err.message}).`,
@@ -209,6 +244,10 @@ async function checkMintAuthority(rng, address) {
   }
 }
 
+// Signal 5 — Ratio volume / market cap
+// ✅ BRANCHÉ EN VRAI : API publique DexScreener, gratuite et sans clé — pas
+// besoin de passer par une fonction serveur ici, il n'y a aucun secret à
+// protéger et DexScreener autorise les appels directs depuis un navigateur.
 async function checkVolumeRatio(rng, address) {
   try {
     const response = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`);
@@ -222,6 +261,8 @@ async function checkVolumeRatio(rng, address) {
       throw new Error('no trading pair found on DexScreener');
     }
 
+    // Plusieurs pools peuvent exister pour un même token ; on prend celui
+    // avec le plus de liquidité, généralement le plus représentatif.
     const pair = pairs.reduce((a, b) => ((b.liquidity?.usd ?? 0) > (a.liquidity?.usd ?? 0) ? b : a));
 
     const volume24h = pair.volume?.h24 ?? 0;
@@ -251,6 +292,11 @@ async function checkVolumeRatio(rng, address) {
   }
 }
 
+// Signal 6 — Historique du wallet créateur
+// ✅ BRANCHÉ EN VRAI (v2, via Helius) : pump.fun a fermé son API publique
+// derrière une authentification, on ne peut plus s'y fier ici. On identifie
+// le créateur via le fee payer de la 1ère transaction du mint, puis on
+// compte ses créations de tokens passées via l'API Enhanced de Helius.
 async function checkCreatorHistory(rng, address) {
   const FUNCTION_URL = `/.netlify/functions/creator-history?address=${encodeURIComponent(address)}`;
 
@@ -261,7 +307,7 @@ async function checkCreatorHistory(rng, address) {
     }
     const { creator, mintEventCount } = await response.json();
 
-    const otherTokensCount = Math.max(0, (mintEventCount ?? 1) - 1);
+    const otherTokensCount = Math.max(0, (mintEventCount ?? 1) - 1); // exclut le token scanné
 
     let status = 'ok';
     if (otherTokensCount >= 5) status = 'danger';
@@ -297,6 +343,10 @@ const EXHIBITS_CONFIG = [
   { key: 'creator',   title: 'Creator history',           fn: checkCreatorHistory },
 ];
 
+// Certains checkers sont encore simulés (synchrones), d'autres font
+// maintenant un vrai appel réseau (asynchrones, ex. checkMintAuthority).
+// `Promise.all` + `await` sur chaque résultat fonctionne pour les deux cas :
+// attendre une valeur qui n'est pas une Promise ne pose aucun problème.
 async function analyzeToken(address) {
   const seed = hashAddress(address);
   const rng = createRng(seed);
@@ -314,6 +364,8 @@ async function analyzeToken(address) {
   return { address, seed, exhibits, score };
 }
 
+// Score global 0 (dangereux) → 100 (sûr).
+// Logique simple : on part de 100 et on retire des points par problème détecté.
 function computeScore(exhibits) {
   let score = 100;
   for (const ex of exhibits) {
@@ -354,6 +406,7 @@ const SCAN_LOG_MESSAGES = [
 ];
 
 function isPlausibleSolanaAddress(str) {
+  // Une adresse Solana est en base58, généralement 32-44 caractères.
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(str.trim());
 }
 
@@ -414,8 +467,9 @@ function renderReport(data) {
   document.getElementById('stamp-text').textContent = verdict.label;
   document.getElementById('stamp-score').textContent = `${data.score}/100`;
 
+  // Relance l'animation du tampon à chaque nouveau scan
   stampRing.style.animation = 'none';
-  void stampRing.offsetWidth;
+  void stampRing.offsetWidth; // force reflow
   stampRing.style.animation = '';
 
   const list = document.getElementById('exhibits-list');
@@ -448,3 +502,50 @@ resetBtn.addEventListener('click', () => {
   input.value = '';
   input.focus();
 });
+
+
+/* --------------------------------------------------------------------------
+   5) COMPTE À REBOURS PREMIUM ($RADAR)
+   --------------------------------------------------------------------------
+   Cible fixée à 7 jours après la mise en place de cette section. Pour
+   changer la date de déblocage, modifie directement PREMIUM_LAUNCH_DATE
+   ci-dessous (format ISO : 'AAAA-MM-JJTHH:MM:SS').
+   -------------------------------------------------------------------------- */
+
+const PREMIUM_LAUNCH_DATE = new Date('2026-07-17T12:00:00Z');
+
+function updateCountdown() {
+  const now = new Date();
+  const diffMs = PREMIUM_LAUNCH_DATE.getTime() - now.getTime();
+
+  const daysEl = document.getElementById('cd-days');
+  const hoursEl = document.getElementById('cd-hours');
+  const minutesEl = document.getElementById('cd-minutes');
+  const secondsEl = document.getElementById('cd-seconds');
+
+  if (!daysEl) return; // la section n'existe pas sur cette page
+
+  if (diffMs <= 0) {
+    daysEl.textContent = '00';
+    hoursEl.textContent = '00';
+    minutesEl.textContent = '00';
+    secondsEl.textContent = '00';
+    return;
+  }
+
+  const totalSeconds = Math.floor(diffMs / 1000);
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  const pad = (n) => String(n).padStart(2, '0');
+
+  daysEl.textContent = pad(days);
+  hoursEl.textContent = pad(hours);
+  minutesEl.textContent = pad(minutes);
+  secondsEl.textContent = pad(seconds);
+}
+
+updateCountdown();
+setInterval(updateCountdown, 1000);

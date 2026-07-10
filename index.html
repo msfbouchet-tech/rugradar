@@ -78,10 +78,58 @@
       <button class="report__reset" id="reset-btn">← New case file</button>
     </section>
 
+    <!-- ======================= PREMIUM COUNTDOWN ======================= -->
+    <section class="premium">
+      <div class="premium__seal">
+        <span class="premium__seal-text">CLASSIFIED</span>
+      </div>
+
+      <div class="premium__body">
+        <p class="premium__eyebrow">Access Level — $RADAR Holders Only</p>
+        <h2 class="premium__title">Premium features unlock in</h2>
+
+        <div class="premium__countdown" id="premium-countdown" aria-live="polite">
+          <div class="premium__unit">
+            <span class="premium__number" id="cd-days">--</span>
+            <span class="premium__label">Days</span>
+          </div>
+          <div class="premium__unit">
+            <span class="premium__number" id="cd-hours">--</span>
+            <span class="premium__label">Hours</span>
+          </div>
+          <div class="premium__unit">
+            <span class="premium__number" id="cd-minutes">--</span>
+            <span class="premium__label">Min</span>
+          </div>
+          <div class="premium__unit">
+            <span class="premium__number" id="cd-seconds">--</span>
+            <span class="premium__label">Sec</span>
+          </div>
+        </div>
+
+        <p class="premium__desc">
+          Holders of <strong>$RADAR</strong> will get early access to a deeper investigation
+          tier once the countdown reaches zero:
+        </p>
+
+        <ul class="premium__features">
+          <li><span class="premium__feature-icon">◈</span> Real-time rug-pull alerts pushed the moment a risk signal flips</li>
+          <li><span class="premium__feature-icon">◈</span> Extended holder & creator history, beyond the free 6-signal report</li>
+          <li><span class="premium__feature-icon">◈</span> Priority scanning — skip the queue during high-traffic launches</li>
+          <li><span class="premium__feature-icon">◈</span> Saved case files & portfolio-wide monitoring</li>
+        </ul>
+
+        <p class="premium__disclaimer">
+          ⚠ $RADAR is a utility token for accessing product features — not an investment, and
+          holding it is not financial advice. Feature availability may change before launch.
+        </p>
+      </div>
+    </section>
+
   </main>
 
   <footer class="footer">
-    <p>Sources (v1): simulated data. Next step: Helius API + Solana RPC.</p>
+    <p>Data sources: Helius RPC · DexScreener. Report is a risk indicator, not financial advice.</p>
   </footer>
 
   <script src="script.js"></script>

@@ -41,6 +41,11 @@ body{
   border-bottom:1px solid var(--line);
 }
 .topbar__brand{ display:flex; align-items:center; gap:10px; }
+.topbar__logo{
+  width:32px; height:32px; border-radius:6px;
+  object-fit:cover;
+  box-shadow:0 0 0 1px var(--line);
+}
 .topbar__mark{ color:var(--amber); font-size:20px; }
 .topbar__name{
   font-family:var(--display); font-weight:600; letter-spacing:0.08em;

@@ -241,6 +241,129 @@ body{
 .report__reset:hover{ border-color:var(--amber); color:var(--amber); }
 
 /* ==========================================================
+   POLISH — hover states & micro-interactions
+   ========================================================== */
+.exhibit{
+  transition: border-color .2s, transform .2s, box-shadow .2s;
+}
+.exhibit:hover{
+  transform: translateX(2px);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.35);
+}
+.exhibit__badge{
+  transition: transform .15s;
+}
+.exhibit:hover .exhibit__badge{ transform: scale(1.05); }
+
+.stamp__ring{
+  transition: transform .25s;
+}
+.stamp__ring:hover{ transform: rotate(-8deg) scale(1.04); }
+
+/* Texture de fond subtile façon papier/scan, sur toute la page */
+body::before{
+  content:"";
+  position:fixed; inset:0; pointer-events:none; z-index:0;
+  background-image:
+    repeating-linear-gradient(0deg, rgba(255,255,255,0.015) 0px, rgba(255,255,255,0.015) 1px, transparent 1px, transparent 3px);
+  opacity:.5;
+}
+.topbar, .wrap, .footer{ position:relative; z-index:1; }
+
+/* ==========================================================
+   PREMIUM COUNTDOWN — "dossier classifié"
+   ========================================================== */
+.premium{
+  margin-top:64px;
+  padding:40px 32px;
+  background:
+    radial-gradient(circle at 85% 0%, rgba(232,163,61,0.08), transparent 55%),
+    var(--panel);
+  border:1px solid var(--line);
+  border-radius:6px;
+  position:relative;
+  overflow:hidden;
+}
+.premium::before{
+  content:"";
+  position:absolute; inset:0;
+  border:1px solid rgba(232,163,61,0.15);
+  border-radius:6px;
+  pointer-events:none;
+  margin:6px;
+}
+
+.premium__seal{
+  position:absolute;
+  top:24px; right:24px;
+  width:88px; height:88px;
+  border-radius:50%;
+  border:2px solid var(--amber);
+  outline:1px dotted var(--amber);
+  outline-offset:4px;
+  display:flex; align-items:center; justify-content:center;
+  transform:rotate(10deg);
+  opacity:.8;
+}
+.premium__seal-text{
+  font-family:var(--display); font-size:11px; font-weight:700;
+  color:var(--amber); letter-spacing:.08em; text-align:center; line-height:1.2;
+}
+@media (max-width:640px){ .premium__seal{ display:none; } }
+
+.premium__body{ max-width:640px; }
+.premium__eyebrow{
+  font-family:var(--mono); font-size:12px; color:var(--amber);
+  text-transform:uppercase; letter-spacing:.1em; margin:0 0 10px;
+}
+.premium__title{
+  font-family:var(--display); font-size:clamp(22px,4vw,30px);
+  font-weight:600; margin:0 0 28px; letter-spacing:-0.01em;
+}
+
+.premium__countdown{
+  display:flex; gap:16px; margin-bottom:28px; flex-wrap:wrap;
+}
+.premium__unit{
+  background:var(--panel-2);
+  border:1px solid var(--line);
+  border-radius:4px;
+  padding:14px 18px;
+  min-width:76px;
+  text-align:center;
+}
+.premium__number{
+  display:block;
+  font-family:var(--mono); font-weight:600; font-size:28px;
+  color:var(--amber); line-height:1;
+  font-variant-numeric: tabular-nums;
+}
+.premium__label{
+  display:block; margin-top:6px;
+  font-family:var(--mono); font-size:10px; color:var(--muted);
+  text-transform:uppercase; letter-spacing:.08em;
+}
+
+.premium__desc{
+  font-size:14.5px; color:var(--text); margin:0 0 16px; line-height:1.6;
+}
+.premium__features{
+  list-style:none; margin:0 0 24px; padding:0;
+  display:flex; flex-direction:column; gap:10px;
+}
+.premium__features li{
+  font-size:13.5px; color:var(--muted); line-height:1.5;
+  display:flex; gap:10px; align-items:flex-start;
+}
+.premium__feature-icon{ color:var(--amber); flex-shrink:0; }
+
+.premium__disclaimer{
+  font-size:12px; color:var(--muted); background:var(--panel-2);
+  border-left:2px solid var(--amber); padding:10px 14px; margin:0;
+  border-radius:0 4px 4px 0;
+}
+
+/* ==========================================================
    FOOTER
    ========================================================== */
 .footer{
